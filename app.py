@@ -1,14 +1,22 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from pydantic import BaseModel
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.prompts import ChatPromptTemplate
 from dotenv import load_dotenv
+import requests
 import os
 
 load_dotenv()
 google_api = os.getenv("google_api")
 
-# Initialize FastAPI app
+# Meta WhatsApp Cloud API Credentials
+ACCESS_TOKEN = "EAAQ7KtoLovABO7pgZCzsKtsgRVEM7DTmZCFKPZBwrPK8umYvKxu4bMZBIdnMl5uILXuXUW1BJoKZByqePPAujb0dNMoD9ZCol4ViZCgmcjnqwsMUxB21nBIxUZA5MOexs7ZCCZBZCvdPeZCXbHnAp5N80dKAZCHtHCcmOewGZCVAZAhlPZANgfFIXr6zss99dQAMJTbaj4hBstMbUAZBOKeVYW0ikly2DuKL3fQNZCdZCOZChmMdKiAwKhAZD"  # Replace with your Meta Access Token
+WHATSAPP_PHONE_NUMBER_ID = "599123009945279" 
+WHATSAPP_API_URL = f"https://graph.facebook.com/v21.0/{WHATSAPP_PHONE_NUMBER_ID}/messages"
+
+AI_API_URL = "https://muhammad-bahjat-backend-service-production.up.railway.app/api/chat"
+VERIFY_TOKEN = "my_secure_token"
+
 app = FastAPI()
 
 # In-memory storage for chat history
@@ -23,6 +31,89 @@ class ChatRequest(BaseModel):
 @app.get("/")
 async def root():
     return {"message": "Muhammad Bahjat's AI Agent Backend Service"}
+
+@app.get("/webhook")
+async def verify_webhook(request: Request):
+    """Webhook verification for Meta (WhatsApp API)"""
+    query_params = request.query_params
+    if query_params.get("hub.mode") == "subscribe" and query_params.get("hub.verify_token") == VERIFY_TOKEN:
+        return int(query_params.get("hub.challenge"))
+    return {"status": "Verification failed"}
+
+# ✅ **Webhook Verification for Meta**
+@app.get("/webhook")
+async def verify_webhook(request: Request):
+    """Webhook verification for WhatsApp API"""
+    query_params = request.query_params
+    if query_params.get("hub.mode") == "subscribe" and query_params.get("hub.verify_token") == VERIFY_TOKEN:
+        return int(query_params.get("hub.challenge"))
+    return {"status": "Verification failed"}
+
+# ✅ **Receive WhatsApp Messages & Call AI**
+@app.post("/webhook")
+async def receive_whatsapp_message(request: Request):
+    """Receives messages from WhatsApp and forwards them to the AI API."""
+    try:
+        data = await request.json()
+
+        if "messages" in data["entry"][0]["changes"][0]["value"]:
+            message = data["entry"][0]["changes"][0]["value"]["messages"][0]
+            sender_id = message["from"]  # WhatsApp User ID
+            text = message["text"]["body"]  # Received Message
+
+            print(f"📩 Received message from {sender_id}: {text}")
+
+            # Call local AI API to generate response
+            ai_response = get_ai_response(sender_id, text)
+
+            # Send AI-generated response back to WhatsApp
+            send_whatsapp_message(sender_id, ai_response)
+
+    except Exception as e:
+        print("Error:", e)
+        return HTTPException(status_code=500, detail=str(e))
+
+    return {"status": "ok"}
+
+# ✅ **Get AI Response from Local API**
+def get_ai_response(sender_id, user_message):
+    """Calls AI Assistant API to get a response."""
+    payload = {
+        "message": user_message,
+        "session_id": sender_id,  # Use sender ID as session ID
+        "history": []  # Optionally, you can store chat history
+    }
+    
+    try:
+        response = requests.post("http://localhost:8000/api/chat", json=payload)
+
+        if response.status_code == 200:
+            return response.json().get("response", "I couldn't understand that.")
+        else:
+            return "Sorry, there was an issue generating a response."
+    
+    except Exception as e:
+        print("AI API Error:", e)
+        return "Error processing AI response."
+
+# ✅ **Send Message Back to WhatsApp**
+def send_whatsapp_message(to, message):
+    """Sends a message back to the WhatsApp user."""
+    headers = {
+        "Authorization": f"Bearer {ACCESS_TOKEN}",
+        "Content-Type": "application/json"
+    }
+    data = {
+        "messaging_product": "whatsapp",
+        "to": to,
+        "type": "text",
+        "text": {"body": message}
+    }
+
+    response = requests.post(WHATSAPP_API_URL, headers=headers, json=data)
+
+    print(f"📤 Sent message to {to}: {message}")
+    return response.json()
 
 @app.post("/api/chat")
 async def chat(request: ChatRequest):
